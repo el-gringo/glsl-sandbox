@@ -49,10 +49,9 @@ class GlslDatabase
     end
 
     def increment_code_counter
-        counter=@counters.find_and_modify({
-            :query => {:_id => 'code'},
-            :update => {'$inc' => {:counter => 1}}
-        })
+        counter=@counters.find_one_and_update(
+            {:_id => 'code'}, {'$inc' => {:counter => 1}}
+        )
 
         counter['counter']
     end
@@ -66,22 +65,23 @@ class GlslDatabase
             :code => code_data['code']
         }
 
-        res=Cloudinary::Uploader.upload(
-            code_data['image'],
-            :public_id => code_id.to_s)
+        if false
+          res=Cloudinary::Uploader.upload(
+              code_data['image'],
+              :public_id => code_id.to_s)
 
-        image_url=res['url']
+          image_url=res['url']
+        end
 
-        @code.find_and_modify({
-            :query => { :_id => code_id },
-            :update => {
+        @code.find_one_and_update({ :_id => code_id },
+            {
                 '$set' => {
                     :modified_at    => time,
-                    :image_url      => image_url
+                    :image => code_data['image']
                 },
                 '$push' => { :versions => data }
             }
-        })
+        )
 
         code=$glsl.get_code(code_id)
 
@@ -124,7 +124,7 @@ class GlslDatabase
             data[:parent_version] = m[3].to_i if m && m[3]
         end
 
-        @code.insert(data)
+        @code.insert_one(data)
 
         save_version(counter, code)
     end
@@ -132,12 +132,11 @@ class GlslDatabase
     def get_page(page=0, effects_per_page=50)
         count=@code.count()
 
-        effects=@code.find({}, {
-            :sort => [:modified_at, 'descending'],
-            :limit => effects_per_page,
-            :skip => page*effects_per_page
-        })
-
+        effects=@code.find({})
+          .sort({modified_at: -1})
+          .limit(effects_per_page)
+          .skip(page*effects_per_page)
+        
         ef=Effects.new(effects,
             :page   => page,
             :count  => count
@@ -147,7 +146,7 @@ class GlslDatabase
     end
 
     def get_code(id)
-        @code.find_one({:_id => id})
+        @code.find({:_id => id}).first
     end
 
     def get_code_json(id, version=nil)
@@ -193,8 +192,14 @@ private
 
     def connect_database
         uri = URI.parse(ENV['MONGOHQ_URL'])
-        conn = Mongo::Connection.from_uri(ENV['MONGOHQ_URL'])
-        @db = conn.db(uri.path.gsub(/^\//, ''))
+        ENV['MONGOID_HOST'] = uri.host
+        ENV['MONGOID_PORT'] = uri.port.to_s
+        ENV['MONGOID_USERNAME'] = uri.user
+        ENV['MONGOID_PASSWORD'] = uri.password
+        ENV['MONGOID_DATABASE'] = uri.path.gsub('/', '')
+        
+        client = Mongo::Client.new(ENV['MONGOHQ_URL'])
+        @db = client.database
 
         @versions=@db.collection('versions')
         @code=@db.collection('code')
@@ -202,9 +207,9 @@ private
     end
 
     def initialize_counter
-        code=@counters.find_one({:_id => 'code'})
+        code=@counters.find({:_id => 'code'}).first
         if !code
-            @counters.insert({
+            @counters.insert_one({
                 :_id => 'code',
                 :counter => 0
             })
